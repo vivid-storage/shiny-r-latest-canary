@@ -1,0 +1,59 @@
+# Canonical source for the canary repo's branch sweeper.
+#
+# Commit this file to the canary repo (vivid-storage/shiny-r-latest-canary) at:
+#   .github/workflows/sweep-canary-branches.yml
+#
+# It runs daily and deletes branches named `canary-*` whose last commit is
+# older than 7 days. Uses the default GITHUB_TOKEN with write access to the
+# repo it runs in — no PAT required.
+#
+# This file lives here as the canonical source of truth; if you tweak the
+# sweeper, update this file and copy it into the canary repo.
+
+name: Sweep stale canary branches
+
+on:
+  schedule:
+    - cron: "0 8 * * *"  # Daily at 08:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete canary-* branches older than 7 days
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const cutoffMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            const branches = await github.paginate(github.rest.repos.listBranches, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            let deleted = 0;
+            let kept = 0;
+            for (const branch of branches) {
+              if (!branch.name.startsWith("canary-")) continue;
+              const commit = await github.rest.repos.getCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: branch.commit.sha,
+              });
+              const commitDate = new Date(commit.data.commit.committer.date).getTime();
+              if (commitDate < cutoffMs) {
+                core.info(`Deleting ${branch.name} (last commit: ${commit.data.commit.committer.date})`);
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `heads/${branch.name}`,
+                });
+                deleted += 1;
+              } else {
+                kept += 1;
+              }
+            }
+            core.notice(`Sweep complete — deleted ${deleted}, kept ${kept}`);
